@@ -611,6 +611,7 @@ cross_idx () {
 
 for var in "$@" ; do
 	case "$var" in
+	--flavor=*)	PM_FLAVOR=${var#--flavor=}; PM_MAKE_ARGS="$PM_MAKE_ARGS FLAVOR=${PM_FLAVOR}" ;;
 	-PP[A-Za-z0-9]*|-*[A-Za-z0-9]PP*)
 				fail "The -PP option must stand alone" ;;
 	--packages)		packages_init first ;;
@@ -917,7 +918,37 @@ fi	# [ "$$" -eq "$PM_PARENT_PID" ]
 #=============== Begin functions relevant to --features and main ===============
 
 iport_from_origin () {
-	pkg query '%n-%v' ${1} || return 1
+	local flav flavmatch foundpkg pkgs
+
+	pkgs=$(pkg query '%n-%v' ${1}) || return 1
+	flavmatch=0
+	cnt=0
+	for pkg in $pkgs; do
+		# in case of multiple pkgs, look for a single flavored match
+		cnt=$(($cnt + 1))
+		[ -n "$PM_FLAVOR" ] &&
+			flav=$(pkg annotate -q --show $pkg flavor) || unset flav
+		if [ -n "$flav" ]; then
+			if [ "$flav" = "$PM_FLAVOR" ]; then
+				if [ $flavmatch -eq 0 ]; then
+					flavmatch=1
+					foundpkg="$pkg"
+				else
+					flavmatch=0
+					# found > 1 flavored match - not expected, stop looking now
+					break
+				fi
+			fi
+		elif [ $cnt -eq 1 ]; then
+			foundpkg="$pkg"
+		fi
+	done
+	if [ $flavmatch -eq 1 ] || [ $cnt -eq 1 ]; then
+		echo "$foundpkg"
+	elif [ $cnt -gt 1 ]; then
+		echo "	===>>> Multiple packages found: $pkgs" >&2
+		return 1
+	fi
 	return
 }
 
@@ -2985,6 +3016,9 @@ else
 	arg2=${2#$pd/} ; arg2=${arg2#$pdb/} ; arg2=${arg2%/}
 
 	case "$arg2" in
+	"") echo ''
+		echo "===>>> The second argument to -o must be a valid package name"
+		echo '' ; no_valid_port;;
 	*/*)	ro_opd=$arg2 ; ro_upg_port=`iport_from_origin $ro_opd` ;;
 	*)	if [ -d "$pdb/$arg2" ] && pkg info -e $arg2; then
 			ro_upg_port=$arg2
@@ -3032,10 +3066,15 @@ fi
 if [ -z "$PM_INDEX_ONLY" ] && [ ! -d "$pd/$portdir" ]; then
 	find_moved_port $portdir $upg_port || no_valid_port
 	[ -n "$moved_npd" ] || no_valid_port
+	flavor="${moved_npd##*@}"
+	moved_npd="${moved_npd%@*}"
 	[ -d "$pd/$moved_npd" ] || no_valid_port
 
 	[ "$$" -eq "$PM_PARENT_PID" ] && parent_exit
-	exec $0 $ARGS -o $moved_npd $upg_port
+	# upg_port should be valid here; be defensive (out of date MOVED?)
+	[ -n "$upg_port" ] || no_valid_port
+	echo "===>>> Reinstalling $upg_port moved to $moved_port"
+	exec $0 $ARGS ${flavor:+--flavor=$flavor} -o $moved_npd $upg_port
 fi
 [ -z "$upg_port" -a -z "$REPLACE_ORIGIN" ] && upg_port=`iport_from_origin ${portdir}`
 
